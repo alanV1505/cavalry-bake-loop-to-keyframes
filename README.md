@@ -1,5 +1,7 @@
 # Bake Loop to Keyframes (Cavalry script)
 
+> Written by **Claude** (Anthropic's AI). The uploader only had the idea. See [Credits](#credits-and-licence).
+
 Turns an animation curve's loop (**Loop**, **Loop with Offset** or **Ping-Pong**) into **regular, editable keyframes**, for an exact number of repetitions.
 
 Why? Cavalry's loops are "all or nothing":
@@ -53,4 +55,6 @@ The difference was 0, with a maximum of 0.005 in one Linear → Bézier case.
 - **Preset Magic Easings in Ping-Pong.** Presets (not Custom expressions) can't be inverted on the Ping-Pong way back. They are copied as is, with a warning.
 
 ## Credits and licence
-Made with Claude (Anthropic). MIT License: free to use, modify and share. See `LICENSE`.
+This script was **written by Claude, Anthropic's AI**: the design, the code and the frame-by-frame testing. The person who published this repository is a Cavalry user who only had the idea (and the real problem it solves); they don't take credit for the code.
+
+MIT License: free to use, modify and share. See `LICENSE`.

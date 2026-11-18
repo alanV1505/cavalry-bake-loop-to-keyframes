@@ -1,6 +1,7 @@
 // =====================================================================
 // BAKE LOOP TO KEYFRAMES  ·  for Cavalry (tested on 2.8.1)
-// Made with Claude (Anthropic) · MIT License (see LICENSE)
+// Written by Claude, Anthropic's AI: design, code and testing.
+// The person who published it only had the idea. MIT License (see LICENSE)
 // =====================================================================
 // Turns the repetitions of a loop into REGULAR, EDITABLE KEYFRAMES,
 // like copy-pasting a range of keyframes as many times as you want.
