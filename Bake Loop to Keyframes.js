@@ -23,7 +23,21 @@
 //   Ctrl+Z undoes it.
 //
 //   Tip: you don't need a loop set in Loop Settings. Animate the range once
-//   and the script repeats it. The native loop is only useful as a preview.
+//   and the script repeats it.
+//
+// PREVIEW
+//   Instead of step 3, press "Preview": the script sets CAVALRY'S OWN LOOP on the
+//   curve (your mode, your times and only your range, using Limit Loops and Filter
+//   Last Keyframes). While previewing you can edit or move the range (Cavalry
+//   updates it live) and change Mode or Times. Ctrl+Z works as usual.
+//   · Keyframes AFTER the range are set aside meanwhile (Cavalry's loop only exists
+//     after the last keyframe). They are saved to a backup file.
+//   · "Bake" → the loop becomes real keyframes and the set-aside keys come back
+//     (rippled if "Ripple" is on).
+//   · "Cancel preview" → the loop is removed and the set-aside keys go back in place;
+//     your edits to the range are kept.
+//   · "Restore set-aside keys" → if a preview was left halfway (window or Cavalry
+//     closed…), brings the set-aside keys back from the backup.
 //
 // WHAT IS COPIED FROM EACH KEYFRAME
 //   Value, interpolation (Bézier / Linear / Step), tangents (position, angle,
@@ -401,6 +415,237 @@ function bakeLoop(mode, times, ripple, removeLoop) {
     return text;
 }
 
+// ------------------------------ PREVIEW ------------------------------
+// The preview IS Cavalry's own loop (Loop Settings), set up by the script:
+//   Mode → postInfinity (1 Loop, 2 Loop with Offset, 4 Oscillate = Ping-Pong)
+//   Limit Loops → postInfinityLoopCount (0 = no limit)
+//   Filter Last Keyframes → postInfinityLoopKeyframes (0 = no filter)
+//   (names checked by saving a test scene in Cavalry 2.8.1)
+// So Cavalry updates it live while you drag, and Ctrl+Z works as usual.
+// Cavalry's loop only exists after the LAST keyframe: keyframes after the range are
+// SET ASIDE (saved to a backup file) and come back when you bake (rippled) or cancel
+// (in place). If something closes halfway, "Restore set-aside keys" brings them back.
+// Baking gives exactly the same result as the native loop (19 frame-by-frame tests).
+var PREVIEW = null;
+var MODE_TO_CAVALRY = [1, 2, 4];   // Loop, Loop with Offset, Oscillate (Ping-Pong)
+
+function alive(layer, attr) { return api.getKeyframeIdsForAttribute(layer, attr); }
+function backupPath() { return api.getAppDataFolder() + "/Bake Loop to Keyframes - set-aside keyframes.json"; }
+function curveOf(layer, attr) {
+    var c = api.getInConnection(layer, attr);
+    c = c ? c.split(".")[0] : "";
+    return c.indexOf("animationCurve") === 0 ? c : null;
+}
+function readLoop(curve) {
+    function g(a) { try { return api.get(curve, a) || 0; } catch (e) { return 0; } }
+    return {postInfinity: g("postInfinity"), postInfinityLoopCount: g("postInfinityLoopCount"),
+            postInfinityLoopKeyframes: g("postInfinityLoopKeyframes")};
+}
+var LOOP_OFF = {postInfinity: 0, postInfinityLoopCount: 0, postInfinityLoopKeyframes: 0};
+
+// Sets the native loop: only the range keyframes, "times" repetitions
+function setLoop(e, mode, times) {
+    var ids = alive(e.layer, e.attr), n = 0;
+    for (var i = 0; i < e.source.length; i++) if (ids.indexOf(e.source[i]) >= 0) n++;
+    api.set(e.curve, {"postInfinity": MODE_TO_CAVALRY[mode], "postInfinityLoopCount": times,
+                      "postInfinityLoopKeyframes": n < ids.length ? n : 0});
+}
+
+// The range keyframes as they are now (edited or moved)
+function currentRange(e) {
+    var ids = alive(e.layer, e.attr), range = [];
+    for (var i = 0; i < e.source.length; i++)
+        if (ids.indexOf(e.source[i]) >= 0)
+            range.push({id: e.source[i], t: api.get(e.source[i], "timeOffset"), d: api.get(e.source[i], "data")});
+    range.sort(function (a, b) { return a.t - b.t; });
+    return range;
+}
+
+// Puts the set-aside keyframes back, shifted D frames, with their exact data.
+// If one is already back (e.g. via Ctrl+Z), it is only repositioned: never duplicated.
+function bringBack(layer, attr, after, D) {
+    var ids = alive(layer, attr), target = [], far = 0;
+    for (var a = 0; a < ids.length; a++) {
+        var ta = api.get(ids[a], "timeOffset");
+        if (ta > far) far = ta;
+        target.push({id: ids[a], d: api.get(ids[a], "data")});   // everything else keeps its data
+    }
+    far += 100000;
+    for (var i = 0; i < after.length; i++) {
+        var k = after[i], id = k.id;
+        if (ids.indexOf(id) < 0) {
+            var obj = {}; obj[attr] = value(k.d);
+            id = api.keyframe(layer, far + i, obj);   // far away first, so no keyframe is overwritten
+        }
+        api.set(id, {"timeOffset": k.t + D});
+        target.push({id: id, d: clone(k.d)});
+    }
+    return writeAndVerify(target);
+}
+
+// The Graph Editor doesn't redraw when a script deletes keyframes (it keeps the old
+// curve and "ghost" points). Deselecting and reselecting a moment later refreshes it,
+// just like clicking the layer.
+var REFRESH_CLOCK = null;
+function refreshView() {
+    if (typeof api.select !== "function") return;
+    var layers = api.getSelection(), keys = api.getSelectedKeyframeIds();
+    api.select([]);
+    function back() { api.select(layers); api.setSelectedKeyframeIds(keys); }
+    if (typeof api.Timer !== "function") { back(); return; }
+    REFRESH_CLOCK = new api.Timer({onTimeout: function () { REFRESH_CLOCK.stop(); back(); }});
+    REFRESH_CLOCK.setInterval(120);
+    REFRESH_CLOCK.setRepeating(false);
+    REFRESH_CLOCK.start();
+}
+
+function saveBackup() {
+    var data = {scene: api.getSceneFilePath(), states: []};
+    for (var i = 0; i < PREVIEW.states.length; i++) {
+        var e = PREVIEW.states[i];
+        data.states.push({layer: e.layer, attr: e.attr, curve: e.curve, after: e.after, loopBefore: e.loopBefore});
+    }
+    api.writeToFile(backupPath(), JSON.stringify(data), true);
+}
+function deleteBackup() { if (api.filePathExists(backupPath())) api.deleteFilePath(backupPath()); }
+function hasBackup() { return !PREVIEW && api.filePathExists(backupPath()); }
+
+function startPreview(mode, times, ripple) {
+    times = Math.round(times);
+    if (PREVIEW) return "Already previewing.";
+    if (api.filePathExists(backupPath()))
+        return "⚠ There are set-aside keyframes from a preview that wasn't closed. Press \"Restore set-aside keys\" first.";
+    if (times < 1) return "⚠ \"Times\" must be 1 or more.";
+    var sel = api.getSelectedKeyframes(), keys = Object.keys(sel || {});
+    if (!keys.length) return "⚠ No keyframes selected. In the Graph Editor, select the range you want to repeat.";
+    var states = [], notes = [];
+    for (var i = 0; i < keys.length; i++) {
+        var dot = keys[i].indexOf(".");
+        var layer = keys[i].substring(0, dot), attr = keys[i].substring(dot + 1);
+        var name = api.getNiceName(layer) + " › " + attr, frames = sel[keys[i]];
+        if (frames.length < 2) { notes.push("⚠ " + name + ": select at least 2 keyframes."); continue; }
+        var curve = curveOf(layer, attr);
+        if (!curve) { notes.push("⚠ " + name + ": can't find its animation curve."); continue; }
+        var t0 = Math.min.apply(null, frames), t1 = Math.max.apply(null, frames);
+        var all = readKeys(layer, attr), range = [], after = [], numeric = true;
+        for (var j = 0; j < all.length; j++) {
+            if (all[j].t >= t0 - 1e-6 && all[j].t <= t1 + 1e-6) range.push(all[j]);
+            else if (all[j].t > t1) after.push({id: all[j].id, t: all[j].t, d: clone(all[j].d)});
+        }
+        for (var c = 0; c < range.length; c++) if (!isNumeric(range[c].d)) numeric = false;
+        if (range.length < 2) { notes.push("⚠ " + name + ": the range needs at least 2 keyframes."); continue; }
+        if (!numeric) { notes.push("⚠ " + name + ": not a numeric attribute (a colour?). Skipped."); continue; }
+        states.push({layer: layer, attr: attr, name: name, curve: curve,
+                     source: range.map(function (k) { return k.id; }), origEnd: range[range.length - 1].t,
+                     after: after, loopBefore: readLoop(curve),
+                     rangeData: range.map(function (k) { return {id: k.id, d: clone(k.d)}; })});
+    }
+    if (!states.length) return notes.join("\n");
+    PREVIEW = {states: states, mode: mode, times: times};
+    saveBackup();   // BEFORE setting anything aside
+    var report = [];
+    for (var s = 0; s < states.length; s++) {
+        var st = states[s];
+        for (var a = 0; a < st.after.length; a++) api.deleteLayer(st.after[a].id);
+        setLoop(st, mode, times);
+        writeAndVerify(st.rangeData);   // removing neighbours can make Cavalry retouch tangents
+        report.push("👁 " + st.name + ": " + MODES[mode] + " × " + times +
+                    (st.after.length ? " (" + st.after.length + " later keyframes set aside; they come back when you bake or cancel)" : ""));
+    }
+    if (notes.length) report = report.concat(notes);
+    refreshView();
+    return "PREVIEWING with Cavalry's loop: edit or move the range, Ctrl+Z works as usual.\n" + report.join("\n");
+}
+
+// Called every few ms (Timer): if you change Mode or Times, the loop is updated
+function watchPreview(mode, times, ripple) {
+    if (!PREVIEW) return null;
+    times = Math.round(times);
+    if (times < 1 || (mode === PREVIEW.mode && times === PREVIEW.times)) return null;
+    PREVIEW.mode = mode; PREVIEW.times = times;
+    for (var i = 0; i < PREVIEW.states.length; i++) setLoop(PREVIEW.states[i], mode, times);
+    return "PREVIEWING with Cavalry's loop: " + MODES[mode] + " × " + times + ".";
+}
+
+// Cancel: removes the loop (restores whatever loop there was) and puts set-aside keys back
+function cancelPreview() {
+    if (!PREVIEW) return "Not previewing.";
+    var failed = 0;
+    for (var i = 0; i < PREVIEW.states.length; i++) {
+        var e = PREVIEW.states[i];
+        api.set(e.curve, e.loopBefore);
+        failed += bringBack(e.layer, e.attr, e.after, 0);
+        api.setSelectedKeyframeIds(currentRange(e).map(function (k) { return k.id; }));
+    }
+    PREVIEW = null;
+    deleteBackup();
+    refreshView();
+    return "Preview cancelled: later keyframes are back in place (your edits to the range are kept)." +
+           (failed ? " WARNING: " + failed + " keyframes are not exact." : "");
+}
+
+// Bake while previewing: the loop becomes real keyframes
+function confirmPreview(mode, times, ripple, removeLoop) {
+    times = Math.round(times);
+    if (times < 1) return "⚠ \"Times\" must be 1 or more.";
+    var report = [], newIds = [];
+    WARNINGS = [];
+    // 1) Check everything fits before touching anything
+    for (var c = 0; c < PREVIEW.states.length; c++) {
+        var ec = PREVIEW.states[c], rc = currentRange(ec);
+        if (rc.length < 2) return "⚠ " + ec.name + ": the range has fewer than 2 keyframes left.";
+        var endC = rc[rc.length - 1].t + plan(rc, mode, times).duration;
+        if (!ripple)
+            for (var a = 0; a < ec.after.length; a++)
+                if (ec.after[a].t <= endC + 1e-6)
+                    return "⚠ " + ec.name + ": it doesn't fit; there is a set-aside keyframe on frame " + ec.after[a].t +
+                           ". Turn on \"Ripple later keyframes\" or reduce Times. Still previewing.";
+    }
+    // 2) Remove the loop, bring the set-aside keys back (rippled) and bake
+    for (var i = 0; i < PREVIEW.states.length; i++) {
+        var e = PREVIEW.states[i], range = currentRange(e);
+        var L = range[range.length - 1], end = L.t + plan(range, mode, times).duration;
+        var D = ripple ? end - e.origEnd : 0;
+        api.set(e.curve, removeLoop ? LOOP_OFF : e.loopBefore);
+        bringBack(e.layer, e.attr, e.after, D);
+        var frames = range.map(function (k) { return k.t; });
+        try { report.push(bakeAttribute(e.layer, e.attr, frames, mode, times, false, false, newIds)); }
+        catch (err) { report.push("✗ " + e.name + ": unexpected error: " + err.message); }
+    }
+    PREVIEW = null;
+    deleteBackup();
+    if (newIds.length) api.setSelectedKeyframeIds(newIds);
+    refreshView();
+    if (WARNINGS.length) report.push("⚠ Note: " + WARNINGS.filter(function (x, j) { return WARNINGS.indexOf(x) === j; }).join("; ") + ".");
+    return report.join("\n");
+}
+
+// Restore from the backup (if a preview was left halfway)
+function restoreBackup() {
+    if (PREVIEW) return "You are previewing: use \"Cancel preview\".";
+    if (!api.filePathExists(backupPath())) return "There are no set-aside keyframes to restore.";
+    var data = JSON.parse(api.readFromFile(backupPath()));
+    var scene = api.getSceneFilePath();
+    if (data.scene && scene !== data.scene)
+        return "⚠ The set-aside keyframes belong to another scene:\n" + data.scene + "\nOpen it and press \"Restore set-aside keys\".";
+    var done = 0;
+    for (var i = 0; i < data.states.length; i++) {
+        var e = data.states[i];
+        try {
+            var ids = alive(e.layer, e.attr), taken = {};
+            for (var a = 0; a < ids.length; a++) taken[api.get(ids[a], "timeOffset")] = ids[a];
+            // if a keyframe already sits on that frame (or came back via Ctrl+Z), don't duplicate
+            var missing = e.after.filter(function (k) { return ids.indexOf(k.id) < 0 && taken[k.t] === undefined; });
+            bringBack(e.layer, e.attr, missing, 0);
+            api.set(e.curve, e.loopBefore);
+            done += missing.length;
+        } catch (err) { return "✗ Couldn't restore " + e.layer + " › " + e.attr + ": " + err.message + ". The backup is still at:\n" + backupPath(); }
+    }
+    deleteBackup();
+    refreshView();
+    return "✓ Restored " + done + " set-aside keyframes and the loop there was before.";
+}
+
 // ------------------------------ WINDOW ------------------------------
 if (typeof BAKE_LOOP_TEST === "undefined" && (typeof ui === "undefined" || typeof ui.setTitle !== "function")) {
     console.log("Bake Loop to Keyframes has a window: run it from Cavalry's Scripts menu, not from the JavaScript Editor.");
@@ -410,7 +655,7 @@ if (typeof BAKE_LOOP_TEST === "undefined" && (typeof ui === "undefined" || typeo
     ui.setMargins(10, 10, 10, 10);
     ui.setSpaceBetween(6);
 
-    var help = new ui.Label("1. In the Graph Editor, select the range to repeat (at least 2 keyframes).\n2. Choose mode and times.  3. Press Bake.");
+    var help = new ui.Label("1. In the Graph Editor, select the range to repeat (at least 2 keyframes).\n2. Choose mode and times.\n3. \"Preview\" to see and adjust it live, or \"Bake\" straight away.");
     var modeUI = new ui.DropDown();
     for (var mm = 0; mm < MODES.length; mm++) modeUI.addEntry(MODES[mm]);
     var timesUI = new ui.NumericField(3);
@@ -425,15 +670,44 @@ if (typeof BAKE_LOOP_TEST === "undefined" && (typeof ui === "undefined" || typeo
     var row3 = new ui.HLayout(); row3.add(rippleUI, new ui.Label("Ripple later keyframes")); row3.addStretch();
     var row4 = new ui.HLayout(); row4.add(removeUI, new ui.Label("Remove the curve's loop")); row4.addStretch();
 
-    button.onClick = function () {
-        try {
-            result.setText(bakeLoop(modeUI.getValue(), timesUI.getValue(), rippleUI.getValue(), removeUI.getValue()));
-        } catch (e) {
-            result.setText("✗ Error: " + e.message);
-            console.error(e.message);
-        }
-    };
+    var previewButton = new ui.Button("Preview");
+    var cancelButton = new ui.Button("Cancel preview");
 
-    ui.add(help, row1, row2, row3, row4, button, result);
+    function safely(fn) {
+        try { var t = fn(); if (t) result.setText(t); }
+        catch (e) { result.setText("✗ Error: " + e.message); console.error(e.message); }
+    }
+
+    button.onClick = function () {
+        safely(function () {
+            if (PREVIEW) return confirmPreview(modeUI.getValue(), timesUI.getValue(), rippleUI.getValue(), removeUI.getValue());
+            return bakeLoop(modeUI.getValue(), timesUI.getValue(), rippleUI.getValue(), removeUI.getValue());
+        });
+    };
+    previewButton.onClick = function () {
+        safely(function () { return startPreview(modeUI.getValue(), timesUI.getValue(), rippleUI.getValue()); });
+    };
+    cancelButton.onClick = function () { safely(cancelPreview); };
+
+    var restoreButton = new ui.Button("Restore set-aside keys");
+    restoreButton.onClick = function () { safely(restoreBackup); };
+
+    // Watcher: every 200 ms, if you change Mode or Times, the preview loop is updated
+    function Watcher() {
+        this.onTimeout = function () {
+            if (!PREVIEW) return;
+            safely(function () { return watchPreview(modeUI.getValue(), timesUI.getValue(), rippleUI.getValue()); });
+        };
+    }
+    var clock = new api.Timer(new Watcher());
+    clock.setInterval(200);
+    clock.setRepeating(true);
+    clock.start();
+
+    var buttonRow = new ui.HLayout(); buttonRow.add(previewButton, cancelButton);
+    ui.add(help, row1, row2, row3, row4, buttonRow, button, result, restoreButton);
+    safely(function () {
+        return hasBackup() ? "⚠ There are set-aside keyframes from a preview that wasn't closed. Press \"Restore set-aside keys\"." : null;
+    });
     ui.show();
 }

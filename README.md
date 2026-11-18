@@ -33,6 +33,19 @@ The script opens a window, so run it from the Scripts menu, not from the JavaScr
 
 You don't need a loop set in *Loop Settings*. Animate the range once and the script repeats it.
 
+## Live preview
+Cavalry's native loop only works after the last keyframe, so you can't preview a loop in the middle of an animation. **Preview** fixes that by using **Cavalry's own loop**:
+1. Select the range and press **Preview**. The script sets the native loop on the curve: your mode and times, and only your range (via *Limit Loops* and *Filter Last Keyframes*). Keyframes after the range are **set aside** meanwhile and saved to a backup file.
+2. While previewing:
+   - you can edit the range keyframes (values, tangents, times) or move the whole range, and Cavalry updates the loop live while you drag;
+   - you can change Mode or Times;
+   - **Ctrl+Z works as usual**, because it is Cavalry's own loop.
+3. Press **Bake** to turn the loop into real keyframes. The set-aside keyframes come back, rippled if *Ripple* is on. Or press **Cancel preview** to remove the loop and put them back in place. Your edits to the range are kept either way.
+
+If a preview is left halfway (the window or Cavalry closed), the window warns you next time. Press **Restore set-aside keys** to bring them back from the backup.
+
+Baking gives exactly the same curve as the native loop.
+
 ## What is copied
 - value;
 - interpolation (Bézier / Linear / Step);
